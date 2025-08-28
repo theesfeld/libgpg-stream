@@ -1,0 +1,268 @@
+.\" libgpg-stream.3 - Manual page for libgpg-stream
+.\"
+.\" Copyright (C) 2025 William Theesfeld <william@theesfeld.net>
+.\"
+.\" This program is free software: you can redistribute it and/or modify
+.\" it under the terms of the GNU General Public License as published by
+.\" the Free Software Foundation, either version 3 of the License, or
+.\" (at your option) any later version.
+.\"
+.\" This program is distributed in the hope that it will be useful,
+.\" but WITHOUT ANY WARRANTY; without even the implied warranty of
+.\" MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+.\" GNU General Public License for more details.
+.\"
+.\" You should have received a copy of the GNU General Public License
+.\" along with this program.  If not, see <https://www.gnu.org/licenses/>.
+.\"
+.TH LIBGPG-STREAM 3 "2025-01-01" "libgpg-stream 1.0.0" "Library Functions Manual"
+.SH NAME
+libgpg-stream \- GNU-standard GPG streaming library for secure multicast communication
+.SH SYNOPSIS
+.nf
+.B #include <libgpg-stream.h>
+.sp
+.BI "gpg_stream_t *gpg_stream_new(void);"
+.BI "gpg_stream_t *gpg_stream_new_address(const char *" address ", int " port ");"
+.BI "void gpg_stream_free(gpg_stream_t *" stream ");"
+.sp
+.BI "bool gpg_stream_auto_keys(gpg_stream_t *" stream ");"
+.BI "bool gpg_stream_set_sender(gpg_stream_t *" stream ", const char *" key_id ");"
+.BI "bool gpg_stream_add_recipient(gpg_stream_t *" stream ", const char *" key_id ");"
+.sp
+.BI "bool gpg_stream_send(gpg_stream_t *" stream ", const void *" data ", size_t " size ");"
+.BI "bool gpg_stream_send_string(gpg_stream_t *" stream ", const char *" str ");"
+.BI "bool gpg_stream_send_file(gpg_stream_t *" stream ", const char *" path ");"
+.BI "bool gpg_stream_send_stdin(gpg_stream_t *" stream ");"
+.sp
+.BI "bool gpg_stream_start_receive(gpg_stream_t *" stream ");"
+.BI "ssize_t gpg_stream_receive(gpg_stream_t *" stream ", void *" buffer ", size_t " size ","
+.BI "                           gpg_packet_info_t *" info ", int " timeout_ms ");"
+.BI "void gpg_stream_stop_receive(gpg_stream_t *" stream ");"
+.sp
+.BI "const char *gpg_stream_error(gpg_stream_t *" stream ");"
+.BI "void gpg_packet_info_free(gpg_packet_info_t *" info ");"
+.fi
+.sp
+Link with \fI-lgpg-stream -lgpgme -lpthread -lm\fP.
+.SH DESCRIPTION
+The
+.B libgpg-stream
+library provides secure, encrypted multicast communication using GPG (GNU Privacy Guard).
+It follows GNU coding standards and implements the Unix philosophy of doing one thing well.
+.PP
+The library automatically handles GPG key management, encryption, decryption, and signature
+verification while providing a simple, functional API for streaming data over multicast networks.
+.SH INITIALIZATION
+.TP
+.BR gpg_stream_new ()
+Creates a new stream context with default multicast address (239.0.0.1:5555).
+Returns a pointer to the stream context, or NULL on failure.
+.TP
+.BR gpg_stream_new_address ()
+Creates a new stream context with the specified multicast address and port.
+Returns a pointer to the stream context, or NULL on failure.
+.TP
+.BR gpg_stream_free ()
+Destroys a stream context and frees all associated resources.
+Always call this function to avoid memory leaks.
+.SH KEY MANAGEMENT
+.TP
+.BR gpg_stream_auto_keys ()
+Automatically detects and configures the first available GPG key pair.
+Returns true on success, false on failure.
+This is the recommended approach for most applications.
+.TP
+.BR gpg_stream_set_sender ()
+Sets a specific GPG key for signing outgoing messages.
+The
+.I key_id
+parameter can be a key ID, fingerprint, or email address.
+Returns true on success, false on failure.
+.TP
+.BR gpg_stream_add_recipient ()
+Adds a recipient key for encrypting outgoing messages.
+Multiple recipients can be added by calling this function multiple times.
+Returns true on success, false on failure.
+.SH SENDING DATA
+.TP
+.BR gpg_stream_send ()
+Sends a raw data buffer over the encrypted stream.
+The data is automatically encrypted and signed before transmission.
+Returns true on success, false on failure.
+.TP
+.BR gpg_stream_send_string ()
+Sends a null-terminated string over the encrypted stream.
+Convenience function equivalent to calling
+.BR gpg_stream_send ()
+with strlen().
+Returns true on success, false on failure.
+.TP
+.BR gpg_stream_send_file ()
+Reads and sends the contents of a file over the encrypted stream.
+The file is read in chunks to handle large files efficiently.
+Returns true on success, false on failure.
+.TP
+.BR gpg_stream_send_stdin ()
+Reads from standard input and sends the data over the encrypted stream.
+Useful for command-line tools and shell pipelines.
+Returns true on success, false on failure.
+.SH RECEIVING DATA
+.TP
+.BR gpg_stream_start_receive ()
+Begins listening for encrypted messages on the multicast stream.
+Must be called before any receive operations.
+Returns true on success, false on failure.
+.TP
+.BR gpg_stream_receive ()
+Receives and decrypts a single message from the stream.
+The
+.I buffer
+parameter must be large enough to hold the decrypted data.
+The
+.I info
+parameter receives metadata about the message including sender information
+and signature validation status.
+The
+.I timeout_ms
+parameter specifies the timeout in milliseconds, or 0 for no timeout.
+Returns the number of bytes received, 0 on timeout, or -1 on error.
+.TP
+.BR gpg_stream_stop_receive ()
+Stops listening for messages and closes the receive socket.
+.SH ERROR HANDLING
+.TP
+.BR gpg_stream_error ()
+Returns a string describing the last error that occurred on the stream context.
+The string is valid until the next library function call on the same context.
+Returns NULL if no error has occurred.
+.SH MEMORY MANAGEMENT
+.TP
+.BR gpg_packet_info_free ()
+Frees memory allocated for packet metadata returned by receive functions.
+Must be called after each successful receive operation to avoid memory leaks.
+.SH DATA STRUCTURES
+.TP
+.B gpg_packet_info_t
+Contains metadata about received packets:
+.RS
+.IP \(bu 2
+.B sequence
+\- Packet sequence number
+.IP \(bu 2
+.B timestamp
+\- Unix timestamp when packet was created
+.IP \(bu 2
+.B sender_fingerprint
+\- GPG fingerprint of sender (must be freed)
+.IP \(bu 2
+.B sender_email
+\- Email address of sender (must be freed)
+.IP \(bu 2
+.B signature_valid
+\- True if signature is valid
+.IP \(bu 2
+.B was_signed
+\- True if packet was signed
+.IP \(bu 2
+.B data_size
+\- Size of decrypted data
+.RE
+.SH EXAMPLES
+.SS Basic Sender
+.nf
+#include <libgpg-stream.h>
+
+int main() {
+    gpg_stream_t *stream = gpg_stream_new();
+    if (!stream) return 1;
+
+    if (!gpg_stream_auto_keys(stream)) {
+        gpg_stream_free(stream);
+        return 1;
+    }
+
+    bool success = gpg_stream_send_string(stream, "Hello, World!");
+
+    gpg_stream_free(stream);
+    return success ? 0 : 1;
+}
+.fi
+.SS Basic Receiver
+.nf
+#include <libgpg-stream.h>
+
+int main() {
+    gpg_stream_t *stream = gpg_stream_new();
+    if (!stream) return 1;
+
+    if (!gpg_stream_auto_keys(stream) ||
+        !gpg_stream_start_receive(stream)) {
+        gpg_stream_free(stream);
+        return 1;
+    }
+
+    char buffer[4096];
+    gpg_packet_info_t info = {0};
+
+    ssize_t received = gpg_stream_receive(stream, buffer,
+                                          sizeof(buffer)-1, &info, 5000);
+
+    if (received > 0) {
+        buffer[received] = '\\0';
+        printf("Received: %s\\n", buffer);
+        gpg_packet_info_free(&info);
+    }
+
+    gpg_stream_stop_receive(stream);
+    gpg_stream_free(stream);
+    return 0;
+}
+.fi
+.SH RETURN VALUES
+Most functions return
+.B bool
+values where
+.B true
+indicates success and
+.B false
+indicates failure.
+The
+.BR gpg_stream_receive ()
+function returns the number of bytes received, 0 on timeout, or -1 on error.
+.SH THREAD SAFETY
+The library is thread-safe when different threads use different stream contexts.
+A single stream context should not be used concurrently by multiple threads
+without external synchronization.
+.SH DEPENDENCIES
+.TP
+.B libgpgme
+GPG Made Easy library for GPG operations
+.TP
+.B pthread
+POSIX threads for internal synchronization
+.TP
+.B Standard C Library
+Math library for timing functions
+.SH SEE ALSO
+.BR gpg (1),
+.BR gpgme (3),
+.BR socket (7),
+.BR ip (7)
+.PP
+Full documentation and examples:
+.UR https://github.com/theesfeld/libgpg-stream
+.UE
+.SH BUGS
+Report bugs to: william@theesfeld.net
+.PP
+GitHub Issues:
+.UR https://github.com/theesfeld/libgpg-stream/issues
+.UE
+.SH COPYRIGHT
+Copyright (C) 2025 William Theesfeld.
+This is free software; see the source for copying conditions.
+There is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+.SH LICENSE
+GNU General Public License version 3 or later <https://gnu.org/licenses/gpl.html>.
+This is free software: you are free to change and redistribute it.

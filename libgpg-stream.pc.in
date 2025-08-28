@@ -1,0 +1,21 @@
+# libgpg-stream.pc.in - pkg-config template for libgpg-stream
+#
+# Copyright (C) 2025 William Theesfeld <william@theesfeld.net>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+libdir=@libdir@
+includedir=@includedir@
+
+Name: libgpg-stream
+Description: GNU-Standard GPG Streaming Library
+URL: https://github.com/theesfeld/libgpg-stream
+Version: @VERSION@
+Requires: gpgme >= 1.0.0
+Libs: -L${libdir} -lgpg-stream -lpthread -lm
+Cflags: -I${includedir}
