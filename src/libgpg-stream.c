@@ -45,14 +45,28 @@
 #define GPG_STREAM_KEYID_SIZE 16
 #define GPG_STREAM_SESSION_ID_SIZE 8
 
+/* Packet types for unicast client management */
+#define PACKET_DATA        0  /* Normal data packet */
+#define PACKET_SUBSCRIBE   1  /* Client registration */
+#define PACKET_KEEPALIVE   2  /* Client keepalive */
+#define PACKET_UNSUBSCRIBE 3  /* Client leaving */
+
 /* Wire protocol packet - packed to prevent alignment issues */
 typedef struct __attribute__((packed)) {
+  uint8_t packet_type;       /* Packet type (data, subscribe, keepalive, etc) */
   uint32_t sequence;
   double timestamp;
   size_t data_size;
   char sender_keyid[GPG_STREAM_KEYID_SIZE + 1];
   uint8_t data[GPG_STREAM_MAX_PACKET_SIZE]; /* May be plain, signed, encrypted, or signed+encrypted */
 } gpg_wire_packet_t;
+
+/* Client tracking for unicast mode */
+typedef struct client_node {
+  struct sockaddr_in addr;
+  time_t last_seen;
+  struct client_node *next;
+} client_node_t;
 
 /* Stream context - opaque to user */
 struct gpg_stream_t {
@@ -98,6 +112,15 @@ struct gpg_stream_t {
   
   /* Thread safety */
   pthread_mutex_t mutex;
+  
+  /* Unicast client tracking */
+  client_node_t *clients;
+  bool is_unicast_server;
+  bool is_unicast_client;
+  pthread_t cleanup_thread;
+  pthread_t keepalive_thread;
+  bool cleanup_running;
+  bool keepalive_running;
 };
 
 /* ========================================================================
@@ -117,6 +140,121 @@ log_message (gpg_stream_t *stream, int level, const char *format, ...)
   va_end (args);
   
   stream->log_callback (level, buffer);
+}
+
+static bool
+is_multicast_address (const char *addr)
+{
+  if (!addr)
+    return false;
+    
+  struct in_addr inaddr;
+  if (inet_pton (AF_INET, addr, &inaddr) != 1)
+    return false;
+    
+  uint32_t ip = ntohl (inaddr.s_addr);
+  /* Multicast range: 224.0.0.0 - 239.255.255.255 (0xE0000000 - 0xEFFFFFFF) */
+  return (ip >= 0xE0000000 && ip <= 0xEFFFFFFF);
+}
+
+static void
+update_client_list (gpg_stream_t *stream, struct sockaddr_in *addr)
+{
+  if (!stream->is_unicast_server)
+    return;
+    
+  /* Check if client already exists */
+  for (client_node_t *client = stream->clients; client; client = client->next)
+    {
+      if (client->addr.sin_addr.s_addr == addr->sin_addr.s_addr &&
+          client->addr.sin_port == addr->sin_port)
+        {
+          client->last_seen = time (NULL);
+          return;
+        }
+    }
+  
+  /* New client - add to list */
+  client_node_t *new_client = malloc (sizeof (client_node_t));
+  if (!new_client)
+    return;
+    
+  memcpy (&new_client->addr, addr, sizeof (struct sockaddr_in));
+  new_client->last_seen = time (NULL);
+  new_client->next = stream->clients;
+  stream->clients = new_client;
+  
+  log_message (stream, GPG_LOG_INFO, "New client registered: %s:%d",
+               inet_ntoa (addr->sin_addr), ntohs (addr->sin_port));
+}
+
+static void
+remove_stale_clients (gpg_stream_t *stream, int timeout_seconds)
+{
+  if (!stream->is_unicast_server)
+    return;
+    
+  time_t now = time (NULL);
+  client_node_t **current = &stream->clients;
+  
+  while (*current)
+    {
+      if (now - (*current)->last_seen > timeout_seconds)
+        {
+          client_node_t *stale = *current;
+          log_message (stream, GPG_LOG_INFO, "Removing stale client: %s:%d",
+                       inet_ntoa (stale->addr.sin_addr), ntohs (stale->addr.sin_port));
+          *current = stale->next;
+          free (stale);
+        }
+      else
+        {
+          current = &(*current)->next;
+        }
+    }
+}
+
+static void *
+keepalive_thread_func (void *arg)
+{
+  gpg_stream_t *stream = (gpg_stream_t *)arg;
+  gpg_wire_packet_t keepalive = {0};
+  keepalive.packet_type = PACKET_KEEPALIVE;
+  
+  while (stream->keepalive_running && stream->receiving)
+    {
+      /* Send keepalive to server */
+      sendto (stream->sockfd, &keepalive, sizeof (keepalive.packet_type) + sizeof (keepalive.sequence), 0,
+              (struct sockaddr*)&stream->addr, sizeof (stream->addr));
+      
+      /* Sleep for 20 seconds */
+      for (int i = 0; i < 20 && stream->keepalive_running; i++)
+        sleep (1);
+    }
+  
+  return NULL;
+}
+
+static void *
+cleanup_thread_func (void *arg)
+{
+  gpg_stream_t *stream = (gpg_stream_t *)arg;
+  
+  while (stream->cleanup_running)
+    {
+      /* Remove stale clients every 10 seconds */
+      for (int i = 0; i < 10 && stream->cleanup_running; i++)
+        sleep (1);
+        
+      if (!stream->cleanup_running)
+        break;
+        
+      pthread_mutex_lock (&stream->mutex);
+      remove_stale_clients (stream, 60);  /* 60 second timeout */
+      pthread_mutex_unlock (&stream->mutex);
+    }
+  
+  return NULL;
 }
 
 static void
@@ -569,14 +707,37 @@ gpg_stream_new_address (const char *address, int port)
     return NULL;
   
   /* Initialize defaults */
-  strncpy (stream->multicast_addr, address ? address : "239.0.0.1", 
-           sizeof (stream->multicast_addr) - 1);
+  const char *final_address = address ? address : "239.0.0.1";
+  strncpy (stream->multicast_addr, final_address, sizeof (stream->multicast_addr) - 1);
   stream->port = port > 0 ? port : 5555;
   stream->sockfd = -1;
   stream->sequence = 1;
   stream->recipient_capacity = 16;
   stream->recipient_keys = malloc (sizeof (char*) * stream->recipient_capacity);
   stream->mode = GPG_MODE_SIGN_AND_ENCRYPT;
+  
+  /* Detect mode based on address */
+  if (is_multicast_address (final_address))
+    {
+      stream->is_unicast_server = false;
+      stream->is_unicast_client = false;
+    }
+  else
+    {
+      stream->is_unicast_server = true;
+      stream->is_unicast_client = true;
+      
+      /* Start cleanup thread for unicast servers */
+      stream->cleanup_running = true;
+      if (pthread_create (&stream->cleanup_thread, NULL, cleanup_thread_func, stream) != 0)
+        {
+          log_message (stream, GPG_LOG_WARN, "Failed to create cleanup thread");
+          stream->cleanup_running = false;
+        }
+    }
+  
+  stream->clients = NULL;
+  stream->keepalive_running = false;
   
   pthread_mutex_init (&stream->mutex, NULL);
   
@@ -598,6 +759,25 @@ gpg_stream_free (gpg_stream_t *stream)
   /* Stop any running operations */
   gpg_stream_stop_source (stream);
   gpg_stream_stop_receive (stream);
+  
+  /* Stop cleanup thread for unicast servers */
+  if (stream->cleanup_running)
+    {
+      stream->cleanup_running = false;
+      if (stream->cleanup_thread)
+        {
+          pthread_join (stream->cleanup_thread, NULL);
+          stream->cleanup_thread = 0;
+        }
+    }
+  
+  /* Clean up client list */
+  while (stream->clients)
+    {
+      client_node_t *next = stream->clients->next;
+      free (stream->clients);
+      stream->clients = next;
+    }
   
   /* Clean up socket */
   if (stream->sockfd >= 0)
@@ -796,6 +976,7 @@ gpg_stream_send (gpg_stream_t *stream, const void *data, size_t size)
   
   /* Create packet */
   gpg_wire_packet_t packet = {0};
+  packet.packet_type = PACKET_DATA;
   packet.sequence = htonl (stream->sequence++);
   packet.timestamp = time (NULL);
   strncpy (packet.sender_keyid, stream->sender_keyid, GPG_STREAM_KEYID_SIZE);
@@ -813,12 +994,43 @@ gpg_stream_send (gpg_stream_t *stream, const void *data, size_t size)
   
   packet.data_size = processed_size;
   
-  /* Send packet */
-  ssize_t sent = sendto (stream->sockfd, &packet, 
-                         sizeof (packet) - GPG_STREAM_MAX_PACKET_SIZE + processed_size,
-                         0, (struct sockaddr*)&stream->addr, sizeof (stream->addr));
+  size_t packet_size = sizeof (packet) - GPG_STREAM_MAX_PACKET_SIZE + processed_size;
+  ssize_t total_sent = 0;
   
-  if (sent < 0)
+  /* Send packet based on mode */
+  if (stream->is_unicast_server)
+    {
+      /* Unicast mode: send to all registered clients */
+      int client_count = 0;
+      for (client_node_t *client = stream->clients; client; client = client->next)
+        {
+          ssize_t sent = sendto (stream->sockfd, &packet, packet_size, 0,
+                                 (struct sockaddr*)&client->addr, sizeof (client->addr));
+          if (sent > 0)
+            {
+              total_sent = sent;
+              client_count++;
+            }
+        }
+      
+      /* Remove stale clients periodically */
+      if (stream->sequence % 100 == 0)  /* Every 100 packets */
+        remove_stale_clients (stream, 60);
+        
+      if (client_count == 0)
+        {
+          log_message (stream, GPG_LOG_WARN, "No clients registered for unicast stream");
+          total_sent = packet_size;  /* Consider successful for sender */
+        }
+    }
+  else
+    {
+      /* Multicast mode: send to multicast group */
+      total_sent = sendto (stream->sockfd, &packet, packet_size, 0,
+                          (struct sockaddr*)&stream->addr, sizeof (stream->addr));
+    }
+  
+  if (total_sent < 0)
     {
       set_error (stream, "Failed to send packet: %s", strerror (errno));
       pthread_mutex_unlock (&stream->mutex);
@@ -1076,20 +1288,42 @@ gpg_stream_start_receive (gpg_stream_t *stream)
       return false;
     }
   
-  /* Join multicast group */
-  struct ip_mreq mreq;
-  mreq.imr_multiaddr.s_addr = stream->addr.sin_addr.s_addr;
-  mreq.imr_interface.s_addr = INADDR_ANY;
-  
-  if (setsockopt (stream->sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof (mreq)) < 0)
+  /* Handle multicast vs unicast mode */
+  if (!stream->is_unicast_client)
     {
-      set_error (stream, "Failed to join multicast group: %s", strerror (errno));
-      return false;
+      /* Multicast mode: join multicast group */
+      struct ip_mreq mreq;
+      mreq.imr_multiaddr.s_addr = stream->addr.sin_addr.s_addr;
+      mreq.imr_interface.s_addr = INADDR_ANY;
+      
+      if (setsockopt (stream->sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof (mreq)) < 0)
+        {
+          set_error (stream, "Failed to join multicast group: %s", strerror (errno));
+          return false;
+        }
+    }
+  else
+    {
+      /* Unicast mode: send initial subscribe packet and start keepalive */
+      gpg_wire_packet_t subscribe = {0};
+      subscribe.packet_type = PACKET_SUBSCRIBE;
+      sendto (stream->sockfd, &subscribe, sizeof (subscribe.packet_type) + sizeof (subscribe.sequence), 0,
+              (struct sockaddr*)&stream->addr, sizeof (stream->addr));
+      
+      /* Start keepalive thread */
+      stream->keepalive_running = true;
+      if (pthread_create (&stream->keepalive_thread, NULL, keepalive_thread_func, stream) != 0)
+        {
+          set_error (stream, "Failed to create keepalive thread");
+          stream->keepalive_running = false;
+          return false;
+        }
     }
   
   stream->receiving = true;
-  log_message (stream, GPG_LOG_INFO, "Started receiving on %s:%d", 
-               stream->multicast_addr, stream->port);
+  log_message (stream, GPG_LOG_INFO, "Started receiving on %s:%d (%s mode)", 
+               stream->multicast_addr, stream->port,
+               stream->is_unicast_client ? "unicast" : "multicast");
   
   return true;
 }
@@ -1101,6 +1335,24 @@ gpg_stream_stop_receive (gpg_stream_t *stream)
     return;
   
   stream->receiving = false;
+  
+  /* Stop keepalive thread for unicast clients */
+  if (stream->is_unicast_client && stream->keepalive_running)
+    {
+      /* Send unsubscribe packet */
+      gpg_wire_packet_t unsubscribe = {0};
+      unsubscribe.packet_type = PACKET_UNSUBSCRIBE;
+      sendto (stream->sockfd, &unsubscribe, sizeof (unsubscribe.packet_type) + sizeof (unsubscribe.sequence), 0,
+              (struct sockaddr*)&stream->addr, sizeof (stream->addr));
+      
+      /* Stop keepalive thread */
+      stream->keepalive_running = false;
+      if (stream->keepalive_thread)
+        {
+          pthread_join (stream->keepalive_thread, NULL);
+          stream->keepalive_thread = 0;
+        }
+    }
   
   if (stream->receive_thread)
     {
@@ -1126,49 +1378,67 @@ gpg_stream_receive (gpg_stream_t *stream, void *buffer, size_t size,
       setsockopt (stream->sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof (timeout));
     }
   
-  /* Receive packet */
-  gpg_wire_packet_t packet;
-  struct sockaddr_in sender_addr;
-  socklen_t sender_len = sizeof (sender_addr);
-  
-  ssize_t received = recvfrom (stream->sockfd, &packet, sizeof (packet), 0,
-                               (struct sockaddr*)&sender_addr, &sender_len);
-  
-  if (received < 0)
+  /* Loop until we get a data packet (filter control packets) */
+  while (1)
     {
-      if (errno == EAGAIN || errno == EWOULDBLOCK)
-        return 0; /* Timeout */
-      set_error (stream, "Failed to receive: %s", strerror (errno));
-      return -1;
+      gpg_wire_packet_t packet;
+      struct sockaddr_in sender_addr;
+      socklen_t sender_len = sizeof (sender_addr);
+      
+      ssize_t received = recvfrom (stream->sockfd, &packet, sizeof (packet), 0,
+                                   (struct sockaddr*)&sender_addr, &sender_len);
+      
+      if (received < 0)
+        {
+          if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return 0; /* Timeout */
+          set_error (stream, "Failed to receive: %s", strerror (errno));
+          return -1;
+        }
+      
+      /* Handle unicast server mode - register clients from control packets */
+      if (stream->is_unicast_server && packet.packet_type != PACKET_DATA)
+        {
+          pthread_mutex_lock (&stream->mutex);
+          update_client_list (stream, &sender_addr);
+          pthread_mutex_unlock (&stream->mutex);
+          continue;  /* Skip control packets, get next packet */
+        }
+      
+      /* Skip non-data packets for unicast clients (keepalives, etc) */
+      if (packet.packet_type != PACKET_DATA)
+        {
+          continue;  /* Transparently filter, get next packet */
+        }
+      
+      /* Process data packet */
+      if (info)
+        {
+          memset (info, 0, sizeof (*info));
+          info->sequence = ntohl (packet.sequence);
+          info->timestamp = packet.timestamp;
+        }
+      
+      ssize_t plain_size = process_received_data (stream, packet.data,
+                                                packet.data_size, buffer, size, info);
+      
+      if (plain_size < 0)
+        {
+          stream->stats.decrypt_failures++;
+          return -1;
+        }
+      
+      if (info && !info->signature_valid)
+        stream->stats.signature_failures++;
+      
+      stream->stats.packets_received++;
+      stream->stats.bytes_received += plain_size;
+      
+      log_message (stream, GPG_LOG_DEBUG, "Received packet %u (%zd bytes)",
+                   info ? info->sequence : 0, plain_size);
+      
+      return plain_size;
     }
-  
-  /* Decrypt and verify */
-  if (info)
-    {
-      memset (info, 0, sizeof (*info));
-      info->sequence = ntohl (packet.sequence);
-      info->timestamp = packet.timestamp;
-    }
-  
-  ssize_t plain_size = process_received_data (stream, packet.data,
-                                            packet.data_size, buffer, size, info);
-  
-  if (plain_size < 0)
-    {
-      stream->stats.decrypt_failures++;
-      return -1;
-    }
-  
-  if (info && !info->signature_valid)
-    stream->stats.signature_failures++;
-  
-  stream->stats.packets_received++;
-  stream->stats.bytes_received += plain_size;
-  
-  log_message (stream, GPG_LOG_DEBUG, "Received packet %u (%zd bytes)",
-               info ? info->sequence : 0, plain_size);
-  
-  return plain_size;
 }
 
 char *

@@ -36,16 +36,24 @@ A flexible, GNU-standard GPG streaming library for secure multicast communicatio
 
 The **libgpg-stream** library provides flexible, secure multicast communication using GPG (GNU Privacy Guard). It follows GNU coding standards and implements the Unix philosophy of doing one thing well.
 
-The library supports multiple GPG modes (plain text, sign-only, encrypt-only, or sign+encrypt), automatic key management with mid-stream key changes, multi-channel communication via different multicast addresses, and multi-recipient encryption. It automatically handles all GPG operations while providing a simple, functional API that **always streams data regardless of encryption success** - embracing the Unix philosophy of robustness.
+The library supports multiple GPG modes (plain text, sign-only, encrypt-only, or sign+encrypt), automatic key management with mid-stream key changes, multi-channel communication, multi-recipient encryption, and **internet streaming via unicast UDP**. It automatically detects multicast addresses for local networks or unicast addresses for internet streaming, handling all GPG operations while providing a simple, functional API that **always streams data regardless of encryption success** - embracing the Unix philosophy of robustness.
 
 ## Features
 
 ### Core Capabilities
 - **Flexible GPG Modes**: Plain text, sign-only, encrypt-only, or sign+encrypt
 - **Universal Data Streaming**: Always streams data - never drops packets regardless of decryption success
-- **Multi-Channel Communication**: Different multicast addresses for separate channels
+- **Multi-Channel Communication**: Different addresses for separate channels
 - **Multi-Recipient Encryption**: Encrypt to multiple keys independently  
 - **Mid-Stream Key Changes**: Change encryption/signing keys without missing data
+- **Internet-Ready Streaming**: Automatic mode detection for local networks and internet
+
+### Networking & Streaming
+- **Dual Mode Support**: Automatic multicast (local) and unicast (internet) detection
+- **Client Registration**: Automatic registration system for internet streaming
+- **Transparent Keepalive**: Maintains connections without user intervention
+- **Address Detection**: 224-239.x.x.x = multicast, others = unicast streaming
+- **Global Accessibility**: Stream across NAT, firewalls, and the internet
 
 ### Security & Cryptography  
 - **GPG Integration**: Full GPG encryption, decryption, and signature verification
@@ -383,19 +391,42 @@ gpg_stream_set_sender(stream, "newsender@example.com");
 gpg_stream_send_string(stream, "Message 2");
 ```
 
+#### Internet Streaming (Unicast)
+```c
+// Server: Bind to all interfaces for internet access
+gpg_stream_t *server = gpg_stream_new_address("0.0.0.0", 5555);
+gpg_stream_auto_keys(server);
+gpg_stream_send_string(server, "Hello Internet!");
+
+// Client: Connect from anywhere on the internet
+gpg_stream_t *client = gpg_stream_new_address("myserver.com", 5555);
+gpg_stream_auto_keys(client);
+gpg_stream_start_receive(client);
+
+char buffer[4096];
+gpg_packet_info_t info = {0};
+ssize_t received = gpg_stream_receive(client, buffer, sizeof(buffer)-1, &info, 5000);
+
+if (received > 0) {
+    buffer[received] = '\0';
+    printf("Received from internet: %s\n", buffer);
+    gpg_packet_info_free(&info);
+}
+```
+
 #### Multi-Channel Communication
 ```c
-// Create separate channels on different multicast addresses
-gpg_stream_t *channel_a = gpg_stream_new_address("239.0.0.1", 5555);
-gpg_stream_t *channel_b = gpg_stream_new_address("239.0.0.2", 5556);
+// Create separate channels - multicast and unicast
+gpg_stream_t *local_channel = gpg_stream_new_address("239.0.0.1", 5555);   // Local network
+gpg_stream_t *inet_channel = gpg_stream_new_address("myserver.com", 5556); // Internet
 
 // Configure different keys/modes per channel
-gpg_stream_set_mode(channel_a, GPG_MODE_PLAIN);
-gpg_stream_set_mode(channel_b, GPG_MODE_SIGN_AND_ENCRYPT);
+gpg_stream_set_mode(local_channel, GPG_MODE_PLAIN);
+gpg_stream_set_mode(inet_channel, GPG_MODE_SIGN_AND_ENCRYPT);
 
 // Send different data on different channels
-gpg_stream_send_string(channel_a, "Public announcement");  
-gpg_stream_send_string(channel_b, "Encrypted secret");
+gpg_stream_send_string(local_channel, "Local network announcement");  
+gpg_stream_send_string(inet_channel, "Internet encrypted data");
 ```
 
 #### Universal Receiver with Metadata

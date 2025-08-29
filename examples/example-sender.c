@@ -41,7 +41,7 @@ static void
 show_usage (const char *program)
 {
   printf ("Usage: %s [OPTIONS] [MESSAGE]\n\n", program);
-  printf ("GNU-standard GPG multicast sender - Unix philosophy in action\n\n");
+  printf ("GNU-standard GPG streaming sender - Works over local networks and internet\n\n");
   printf ("Input Sources (pick one):\n");
   printf ("  MESSAGE               Send single message string\n");
   printf ("  --stdin              Read from standard input\n");  
@@ -50,8 +50,8 @@ show_usage (const char *program)
   printf ("  --command CMD        Read from command output\n");
   printf ("  --fd FD              Read from file descriptor\n");
   printf ("\nOptions:\n");
-  printf ("  --address ADDR       Multicast address (default: 239.0.0.1)\n");
-  printf ("  --port PORT          Multicast port (default: 5555)\n");
+  printf ("  --address ADDR       Address: multicast (239.x.x.x) or unicast (IP/hostname)\n");
+  printf ("  --port PORT          Port (default: 5555)\n");
   printf ("  --sender KEY         Sender key ID (auto-detected if not specified)\n");
   printf ("  --recipient KEY      Add recipient key (can be used multiple times)\n");
   printf ("  --mode MODE          GPG mode: plain, sign, encrypt, sign+encrypt (default)\n");
@@ -59,12 +59,16 @@ show_usage (const char *program)
   printf ("  --verbose           Enable verbose logging\n");
   printf ("  --debug             Enable debug logging\n");
   printf ("  --help              Show this help\n");
-  printf ("\nExamples:\n");
+  printf ("\nMode Examples:\n");
+  printf ("  Multicast (local network): --address 239.0.0.1 --port 5555\n");
+  printf ("  Unicast (internet):        --address myserver.com --port 5555\n");
+  printf ("  Bind to all interfaces:    --address 0.0.0.0 --port 5555\n");
+  printf ("\nUsage Examples:\n");
   printf ("  %s \"Hello World\"                    # Send single message\n", program);
   printf ("  echo \"data\" | %s --stdin             # Send from stdin\n", program);  
   printf ("  %s --file /var/log/messages           # Send file contents\n", program);
   printf ("  %s --command \"journalctl -f\"         # Stream from journalctl\n", program);
-  printf ("  %s --pipe /tmp/mypipe --interval 1    # Stream from pipe every second\n", program);
+  printf ("  %s --address myserver.com \"message\"   # Send to internet host\n", program);
 }
 
 int

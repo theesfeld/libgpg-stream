@@ -53,10 +53,10 @@ static void
 show_usage (const char *program)
 {
   printf ("Usage: %s [OPTIONS]\n\n", program);
-  printf ("GNU-standard GPG multicast receiver - Unix philosophy in action\n\n");
+  printf ("GNU-standard GPG streaming receiver - Works over local networks and internet\n\n");
   printf ("Options:\n");
-  printf ("  --address ADDR       Multicast address (default: 239.0.0.1)\n");
-  printf ("  --port PORT          Multicast port (default: 5555)\n");
+  printf ("  --address ADDR       Address: multicast (239.x.x.x) or unicast (IP/hostname)\n");
+  printf ("  --port PORT          Port (default: 5555)\n");
   printf ("  --key KEY            Decryption key ID (auto-detected if not specified)\n");
   printf ("  --file PATH          Write output to file instead of stdout\n");
   printf ("  --timeout SECS       Receive timeout in seconds (default: no timeout)\n");
@@ -64,11 +64,14 @@ show_usage (const char *program)
   printf ("  --debug              Enable debug logging\n");
   printf ("  --stats              Show periodic statistics\n");
   printf ("  --help               Show this help\n");
-  printf ("\nExamples:\n");
+  printf ("\nMode Examples:\n");
+  printf ("  Multicast (local network): --address 239.0.0.1 --port 5555\n");
+  printf ("  Unicast (internet):        --address myserver.com --port 5555\n");
+  printf ("\nUsage Examples:\n");
   printf ("  %s                            # Basic receiver with auto-keys\n", program);
   printf ("  %s --verbose --stats          # Detailed output with statistics\n", program);
   printf ("  %s --file log.txt             # Save to file\n", program);
-  printf ("  %s --address 239.0.0.2        # Custom multicast group\n", program);
+  printf ("  %s --address myserver.com      # Connect to internet host\n", program);
 }
 
 static void

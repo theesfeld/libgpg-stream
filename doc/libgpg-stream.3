@@ -50,13 +50,16 @@ Link with \fI-lgpg-stream -lgpgme -lpthread -lm\fP.
 .SH DESCRIPTION
 The
 .B libgpg-stream
-library provides flexible, secure multicast communication using GPG (GNU Privacy Guard).
-It follows GNU coding standards and implements the Unix philosophy of doing one thing well.
+library provides flexible, secure streaming communication using GPG (GNU Privacy Guard).
+It supports both local network multicast and internet unicast streaming with automatic mode detection.
+The library follows GNU coding standards and implements the Unix philosophy of doing one thing well.
 .PP
 The library supports multiple GPG modes (plain text, sign-only, encrypt-only, or sign+encrypt),
-automatic key management with mid-stream key changes, multi-channel communication via different
-multicast addresses, and multi-recipient encryption. It automatically handles all GPG operations
-while providing a simple, functional API that always streams data regardless of encryption success.
+automatic key management with mid-stream key changes, multi-channel communication, multi-recipient 
+encryption, and internet streaming via unicast UDP. It automatically detects multicast addresses 
+(224-239.x.x.x) for local network use or unicast addresses (IP/hostname) for internet streaming.
+All GPG operations are handled automatically while providing a simple, functional API that 
+always streams data regardless of encryption success.
 .SH INITIALIZATION
 .TP
 .BR gpg_stream_new ()
@@ -64,12 +67,26 @@ Creates a new stream context with default multicast address (239.0.0.1:5555).
 Returns a pointer to the stream context, or NULL on failure.
 .TP
 .BR gpg_stream_new_address ()
-Creates a new stream context with the specified multicast address and port.
+Creates a new stream context with the specified address and port.
+Automatically detects multicast (224-239.x.x.x) for local networks or unicast (IP/hostname) for internet streaming.
 Returns a pointer to the stream context, or NULL on failure.
 .TP
 .BR gpg_stream_free ()
 Destroys a stream context and frees all associated resources.
 Always call this function to avoid memory leaks.
+.SH STREAMING MODES
+The library automatically detects the streaming mode based on the address:
+.TP
+.B Multicast Mode (Local Network)
+Uses multicast addresses in the range 224.0.0.0 to 239.255.255.255.
+Ideal for local network communication where multiple receivers can join
+the same multicast group. Requires network infrastructure that supports multicast.
+.TP
+.B Unicast Mode (Internet)
+Uses any address outside the multicast range, including IP addresses,
+hostnames, and special addresses like 0.0.0.0 (bind to all interfaces).
+Enables internet streaming via client registration and keepalive system.
+Clients automatically register with the server and maintain connections.
 .SH KEY MANAGEMENT
 .TP
 .BR gpg_stream_auto_keys ()
@@ -277,6 +294,49 @@ int main() {
 
     gpg_stream_free(channel_a);
     gpg_stream_free(channel_b);
+    return 0;
+}
+.fi
+.SS Internet Streaming (Unicast)
+.nf
+#include <libgpg-stream.h>
+
+// Server: Bind to all interfaces for internet access
+int server_main() {
+    gpg_stream_t *stream = gpg_stream_new_address("0.0.0.0", 5555);
+    if (!stream) return 1;
+
+    gpg_stream_auto_keys(stream);
+    gpg_stream_send_string(stream, "Internet streaming message!");
+
+    gpg_stream_free(stream);
+    return 0;
+}
+
+// Client: Connect to server via internet
+int client_main() {
+    gpg_stream_t *stream = gpg_stream_new_address("myserver.com", 5555);
+    if (!stream) return 1;
+
+    gpg_stream_auto_keys(stream);
+    if (!gpg_stream_start_receive(stream)) {
+        gpg_stream_free(stream);
+        return 1;
+    }
+
+    char buffer[4096];
+    gpg_packet_info_t info = {0};
+    ssize_t received = gpg_stream_receive(stream, buffer, 
+                                          sizeof(buffer)-1, &info, 5000);
+
+    if (received > 0) {
+        buffer[received] = '\\0';
+        printf("Received from internet: %s\\n", buffer);
+        gpg_packet_info_free(&info);
+    }
+
+    gpg_stream_stop_receive(stream);
+    gpg_stream_free(stream);
     return 0;
 }
 .fi
