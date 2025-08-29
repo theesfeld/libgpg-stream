@@ -48,8 +48,8 @@ AC_CHECK_FUNCS([pthread_mutex_init pthread_mutex_lock pthread_mutex_unlock])
 # Define preprocessor macros
 AC_DEFINE([_GNU_SOURCE], [1], [Enable GNU extensions])
 
-# Set compiler flags with LFS support
-CFLAGS="$CFLAGS -Wall -Wextra -std=c99 -D_FILE_OFFSET_BITS=64"
+# Set compiler flags with LFS support and optimization
+CFLAGS="$CFLAGS -Wall -Wextra -std=c99 -D_FILE_OFFSET_BITS=64 -O2"
 CPPFLAGS="$CPPFLAGS -D_FILE_OFFSET_BITS=64"
 
 # Debug support
