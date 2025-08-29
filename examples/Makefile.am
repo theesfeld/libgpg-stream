@@ -32,5 +32,5 @@ example_sender_SOURCES = example-sender.c
 # Example receiver  
 example_receiver_SOURCES = example-receiver.c
 
-# Extra files
-EXTRA_DIST = README
+# Extra files to distribute (none currently)
+# EXTRA_DIST = 
