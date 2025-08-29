@@ -82,33 +82,15 @@ jobs:
 
       - name: Build for ${{ matrix.arch }}
         run: |
-          # Create a temporary Dockerfile for cross-compilation
-          cat > Dockerfile << 'EOF'
-          FROM --platform=${{ matrix.platform }} ubuntu:22.04
-          RUN apt-get update && apt-get install -y \
-              build-essential \
-              libgpgme-dev \
-              autopoint \
-              libtool \
-              automake \
-              pkg-config
-          WORKDIR /src
-          COPY . .
-          RUN ./autogen.sh && \
-              ./configure --prefix=/usr && \
-              make && \
-              make DESTDIR=/tmp/install install && \
-              tar -czf /tmp/libgpg-stream-${{ needs.release.outputs.version }}-linux-${{ matrix.arch }}.tar.gz \
-              -C /tmp/install .
-          EOF
-          
-          # Build using Docker
+          # Build using Docker with proper LFS support
           docker buildx build \
             --platform ${{ matrix.platform }} \
             --output type=local,dest=. \
             --target export \
             -f- . << 'EOF'
-          FROM --platform=${{ matrix.platform }} ubuntu:22.04 as build
+          FROM --platform=${{ matrix.platform }} ubuntu:22.04 AS build
+          
+          # Install dependencies
           RUN apt-get update && apt-get install -y \
               build-essential \
               libgpgme-dev \
@@ -116,14 +98,24 @@ jobs:
               libtool \
               automake \
               pkg-config
+          
+          # Set up build environment with LFS support
+          ENV CPPFLAGS="-D_FILE_OFFSET_BITS=64"
+          ENV CFLAGS="-D_FILE_OFFSET_BITS=64"
+          
           WORKDIR /src
           COPY . .
+          
+          # Configure with LFS support explicitly
           RUN ./autogen.sh && \
-              ./configure --prefix=/usr && \
+              ./configure --prefix=/usr \
+                         --enable-largefile \
+                         CPPFLAGS="-D_FILE_OFFSET_BITS=64" \
+                         CFLAGS="-D_FILE_OFFSET_BITS=64 -Wall -Wextra -std=c99 -O2" && \
               make && \
               make DESTDIR=/tmp/install install
           
-          FROM scratch as export
+          FROM scratch AS export
           COPY --from=build /tmp/install /
           EOF
           
