@@ -1,0 +1,69 @@
+# GNU Autotools - generated files
+/Makefile
+/Makefile.in
+/aclocal.m4
+/ar-lib
+/compile
+/config.guess
+/config.log
+/config.status
+/config.sub
+/configure
+/depcomp
+/install-sh
+/libtool
+/ltmain.sh
+/m4/
+/missing
+/test-driver
+/autom4te.cache/
+
+# Build artifacts
+*.o
+*.lo
+*.la
+*.so
+*.so.*
+*.a
+.libs/
+.deps/
+
+# Generated pkg-config file
+/libgpg-stream.pc
+
+# Distribution tarballs and directories
+/*.tar.gz
+/*.tar.bz2
+/*.tar.xz
+/libgpg-stream-*/
+/release/
+
+# Subdirectory generated files
+/src/Makefile
+/src/Makefile.in
+/src/.deps/
+/examples/Makefile
+/examples/Makefile.in
+/examples/.deps/
+/doc/Makefile
+/doc/Makefile.in
+/doc/texinfo.tex
+
+# Editor and OS files
+*~
+.#*
+\#*#
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Development files
+*.log
+core
+core.*
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*

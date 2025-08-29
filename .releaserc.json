@@ -1,0 +1,26 @@
+{
+  "branches": ["main"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "sed -i 's/AC_INIT(\\[libgpg-stream\\], \\[.*\\]/AC_INIT([libgpg-stream], [${nextRelease.version}]/' configure.ac && git add configure.ac && echo -e 'Version ${nextRelease.version}\\n\\n${nextRelease.notes}\\n\\n$(cat NEWS)' > NEWS && git add NEWS",
+        "publishCmd": "echo 'Built tarball: libgpg-stream-${nextRelease.version}.tar.gz'"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": ["libgpg-stream-*.tar.gz"]
+      }
+    ],
+    [
+      "@semantic-release/exec",
+      {
+        "successCmd": "bash .ci/trigger-aur-update.sh ${nextRelease.version}"
+      }
+    ]
+  ]
+}
