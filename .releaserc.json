@@ -6,7 +6,7 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "sed -i 's/AC_INIT(\\[libgpg-stream\\], \\[.*\\]/AC_INIT([libgpg-stream], [${nextRelease.version}]/' configure.ac && git add configure.ac && echo -e 'Version ${nextRelease.version}\\n\\n${nextRelease.notes}\\n\\n$(cat NEWS)' > NEWS && git add NEWS",
+        "prepareCmd": "sed -i 's/AC_INIT(\\[libgpg-stream\\], \\[.*\\]/AC_INIT([libgpg-stream], [${nextRelease.version}]/' configure.ac && git add configure.ac && echo -e 'Version ${nextRelease.version}\\n\\n${nextRelease.notes}\\n\\n$(cat NEWS)' > NEWS && git add NEWS && ./autogen.sh && ./configure && make dist",
         "publishCmd": "echo 'Built tarball: libgpg-stream-${nextRelease.version}.tar.gz'"
       }
     ],

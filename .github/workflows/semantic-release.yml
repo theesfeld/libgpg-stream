@@ -33,12 +33,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgpgme-dev autopoint libtool automake
 
-      - name: Build tarball
-        run: |
-          ./autogen.sh
-          ./configure
-          make dist
-
       - name: Run semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
