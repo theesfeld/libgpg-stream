@@ -15,7 +15,7 @@ curl -X POST \
   -H "Accept: application/vnd.github+json" \
   -H "Authorization: Bearer ${AUR_REPO_TOKEN}" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
-  https://api.github.com/repos/theesfed/libgpg-stream-aur/dispatches \
+  https://api.github.com/repos/theesfeld/libgpg-stream-aur/dispatches \
   -d "{\"event_type\":\"update-version\",\"client_payload\":{\"version\":\"${VERSION}\"}}"
 
 echo "AUR update triggered successfully"
