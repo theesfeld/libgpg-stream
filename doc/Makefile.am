@@ -18,8 +18,5 @@
 # Manual pages
 man_MANS = libgpg-stream.3
 
-# Info documentation
-info_TEXINFOS = libgpg-stream.texi
-
 # Extra distribution files
-EXTRA_DIST = $(man_MANS) README
+EXTRA_DIST = $(man_MANS)
