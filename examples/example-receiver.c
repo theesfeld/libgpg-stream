@@ -1,4 +1,4 @@
-/* example-receiver.c - GNU-standard simple receiver example
+/* example-receiver.c - GNU-standard simple receiver example 
  *
  * Copyright (C) 2025 William Theesfeld <william@theesfeld.net>
  *
