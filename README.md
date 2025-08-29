@@ -5,7 +5,7 @@
 [![C Standard](https://img.shields.io/badge/C-99-blue.svg)](https://en.wikipedia.org/wiki/C99)
 [![Build System](https://img.shields.io/badge/build-GNU%20Autotools-orange.svg)](https://www.gnu.org/software/automake/)
 
-GNU-standard GPG streaming library for secure multicast communication.
+A GNU-standard GPG streaming library for secure multicast communication.
 
 ## Table of Contents
 
