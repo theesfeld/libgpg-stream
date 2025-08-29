@@ -1,7 +1,7 @@
 # libgpg-stream
 
 [![License: GPL v3+](https://img.shields.io/badge/License-GPL%20v3+-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](https://github.com/theesfeld/libgpg-stream/releases)
+[![Version](https://img.shields.io/badge/version-dynamic-green.svg)](https://github.com/theesfeld/libgpg-stream/releases)
 [![C Standard](https://img.shields.io/badge/C-99-blue.svg)](https://en.wikipedia.org/wiki/C99)
 [![Build System](https://img.shields.io/badge/build-GNU%20Autotools-orange.svg)](https://www.gnu.org/software/automake/)
 
