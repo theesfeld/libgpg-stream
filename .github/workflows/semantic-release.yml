@@ -41,7 +41,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
           AUR_REPO_TOKEN: ${{ secrets.AUR_REPO_TOKEN }}
-        run: npx semantic-release
+        run: |
+          npx semantic-release > semantic-output.log 2>&1
+          cat semantic-output.log
+          
+          # Extract version and release status from semantic-release output
+          if grep -q "Published release" semantic-output.log; then
+            echo "new_release_published=true" >> $GITHUB_OUTPUT
+            VERSION=$(grep "Published release" semantic-output.log | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+            echo "new_release_version=$VERSION" >> $GITHUB_OUTPUT
+            echo "Released version: $VERSION"
+          else
+            echo "new_release_published=false" >> $GITHUB_OUTPUT
+            echo "No release published"
+          fi
 
   build-binaries:
     needs: release
