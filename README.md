@@ -76,6 +76,12 @@ brew install gpgme
 
 ## Installation
 
+### ARCH LINUX
+1. **Install from AUR**
+   ```bash
+   yay -s libgpg-stream
+   ```
+
 ### From Source
 
 1. **Clone the repository**:
@@ -188,7 +194,7 @@ Creates a new stream context with default multicast address (239.0.0.1:5555).
 
 #### `gpg_stream_t *gpg_stream_new_address(const char *address, int port)`
 Creates a new stream context with specified multicast address and port.
-- **Parameters**: 
+- **Parameters**:
   - `address` - Multicast address string
   - `port` - Port number
 - **Returns**: Pointer to stream context, or `NULL` on failure
@@ -211,7 +217,7 @@ Sets a specific GPG key for signing outgoing messages.
 
 #### `bool gpg_stream_add_recipient(gpg_stream_t *stream, const char *key_id)`
 Adds a recipient key for encrypting outgoing messages.
-- **Parameters**: `key_id` - Key ID, fingerprint, or email address  
+- **Parameters**: `key_id` - Key ID, fingerprint, or email address
 - **Returns**: `true` on success, `false` on failure
 - **Note**: Call multiple times to add multiple recipients
 
@@ -279,7 +285,7 @@ Frees memory allocated for packet metadata.
 Contains metadata about received packets:
 
 - **`sequence`** - Packet sequence number
-- **`timestamp`** - Unix timestamp when packet was created  
+- **`timestamp`** - Unix timestamp when packet was created
 - **`sender_fingerprint`** - GPG fingerprint of sender (must be freed)
 - **`sender_email`** - Email address of sender (must be freed)
 - **`signature_valid`** - `true` if signature is valid
