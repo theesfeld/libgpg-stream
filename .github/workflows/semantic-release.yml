@@ -8,6 +8,9 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.semantic.outputs.new_release_version }}
+      released: ${{ steps.semantic.outputs.new_release_published }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,7 +37,90 @@ jobs:
           sudo apt-get install -y libgpgme-dev autopoint libtool automake
 
       - name: Run semantic-release
+        id: semantic
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
           AUR_REPO_TOKEN: ${{ secrets.AUR_REPO_TOKEN }}
         run: npx semantic-release
+
+  build-binaries:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64, armv7]
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+          - arch: aarch64
+            platform: linux/arm64
+          - arch: armv7
+            platform: linux/arm/v7
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build for ${{ matrix.arch }}
+        run: |
+          # Create a temporary Dockerfile for cross-compilation
+          cat > Dockerfile << 'EOF'
+          FROM --platform=${{ matrix.platform }} ubuntu:22.04
+          RUN apt-get update && apt-get install -y \
+              build-essential \
+              libgpgme-dev \
+              autopoint \
+              libtool \
+              automake \
+              pkg-config
+          WORKDIR /src
+          COPY . .
+          RUN ./autogen.sh && \
+              ./configure --prefix=/usr && \
+              make && \
+              make DESTDIR=/tmp/install install && \
+              tar -czf /tmp/libgpg-stream-${{ needs.release.outputs.version }}-linux-${{ matrix.arch }}.tar.gz \
+              -C /tmp/install .
+          EOF
+          
+          # Build using Docker
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            --output type=local,dest=. \
+            --target export \
+            -f- . << 'EOF'
+          FROM --platform=${{ matrix.platform }} ubuntu:22.04 as build
+          RUN apt-get update && apt-get install -y \
+              build-essential \
+              libgpgme-dev \
+              autopoint \
+              libtool \
+              automake \
+              pkg-config
+          WORKDIR /src
+          COPY . .
+          RUN ./autogen.sh && \
+              ./configure --prefix=/usr && \
+              make && \
+              make DESTDIR=/tmp/install install
+          
+          FROM scratch as export
+          COPY --from=build /tmp/install /
+          EOF
+          
+          # Create tarball from exported files
+          tar -czf libgpg-stream-${{ needs.release.outputs.version }}-linux-${{ matrix.arch }}.tar.gz \
+              -C . usr/
+
+      - name: Upload binary artifact
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          gh release upload v${{ needs.release.outputs.version }} \
+            libgpg-stream-${{ needs.release.outputs.version }}-linux-${{ matrix.arch }}.tar.gz
