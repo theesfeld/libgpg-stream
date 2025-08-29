@@ -5,7 +5,7 @@
 [![C Standard](https://img.shields.io/badge/C-99-blue.svg)](https://en.wikipedia.org/wiki/C99)
 [![Build System](https://img.shields.io/badge/build-GNU%20Autotools-orange.svg)](https://www.gnu.org/software/automake/)
 
-A GNU-standard GPG streaming library for secure multicast communication.
+A flexible, GNU-standard GPG streaming library for secure multicast communication with multiple encryption modes, multi-channel support, and universal data streaming.
 
 ## Table of Contents
 
@@ -34,20 +34,31 @@ A GNU-standard GPG streaming library for secure multicast communication.
 
 ## Overview
 
-The **libgpg-stream** library provides secure, encrypted multicast communication using GPG (GNU Privacy Guard). It follows GNU coding standards and implements the Unix philosophy of doing one thing well.
+The **libgpg-stream** library provides flexible, secure multicast communication using GPG (GNU Privacy Guard). It follows GNU coding standards and implements the Unix philosophy of doing one thing well.
 
-The library automatically handles GPG key management, encryption, decryption, and signature verification while providing a simple, functional API for streaming data over multicast networks.
+The library supports multiple GPG modes (plain text, sign-only, encrypt-only, or sign+encrypt), automatic key management with mid-stream key changes, multi-channel communication via different multicast addresses, and multi-recipient encryption. It automatically handles all GPG operations while providing a simple, functional API that **always streams data regardless of encryption success** - embracing the Unix philosophy of robustness.
 
 ## Features
 
-- **Secure Communication**: End-to-end encryption using GPG
-- **Multicast Support**: Efficient one-to-many communication
-- **Automatic Key Management**: Simplified GPG key handling
-- **Signature Verification**: Authenticate message sources
-- **Multiple Input Methods**: Send strings, files, or stdin
-- **GNU Compliant**: Follows GNU coding standards
-- **Thread Safe**: Safe for multi-threaded applications
+### Core Capabilities
+- **Flexible GPG Modes**: Plain text, sign-only, encrypt-only, or sign+encrypt
+- **Universal Data Streaming**: Always streams data - never drops packets regardless of decryption success
+- **Multi-Channel Communication**: Different multicast addresses for separate channels
+- **Multi-Recipient Encryption**: Encrypt to multiple keys independently  
+- **Mid-Stream Key Changes**: Change encryption/signing keys without missing data
+
+### Security & Cryptography  
+- **GPG Integration**: Full GPG encryption, decryption, and signature verification
+- **Auto-Detection**: Receivers automatically detect plain/signed/encrypted data
+- **Key Management**: Automatic key detection with manual override options
+- **Signature Verification**: Comprehensive signature validation with metadata
+
+### Development & Deployment
+- **GNU Compliant**: Follows GNU coding standards and philosophy
+- **Thread Safe**: Safe for multi-threaded applications when using separate contexts
 - **Zero Dependencies**: Only requires standard libraries and GPGME
+- **Multiple Input Methods**: Send strings, files, stdin, pipes, or command output
+- **Comprehensive API**: Simple functional interface with detailed packet metadata
 
 ## Dependencies
 
@@ -124,8 +135,7 @@ Example with options:
 
 ## Quick Start
 
-### Basic Sender
-
+### Plain Text Sender
 ```c
 #include <libgpg-stream.h>
 
@@ -133,11 +143,8 @@ int main() {
     gpg_stream_t *stream = gpg_stream_new();
     if (!stream) return 1;
 
-    if (!gpg_stream_auto_keys(stream)) {
-        gpg_stream_free(stream);
-        return 1;
-    }
-
+    // Set plain text mode - no encryption or signing
+    gpg_stream_set_mode(stream, GPG_MODE_PLAIN);
     bool success = gpg_stream_send_string(stream, "Hello, World!");
 
     gpg_stream_free(stream);
@@ -145,8 +152,7 @@ int main() {
 }
 ```
 
-### Basic Receiver
-
+### Multi-Recipient Encrypted Sender
 ```c
 #include <libgpg-stream.h>
 
@@ -154,8 +160,31 @@ int main() {
     gpg_stream_t *stream = gpg_stream_new();
     if (!stream) return 1;
 
-    if (!gpg_stream_auto_keys(stream) ||
-        !gpg_stream_start_receive(stream)) {
+    // Set up sender key and multiple recipients
+    gpg_stream_set_sender(stream, "sender@example.com");
+    gpg_stream_add_recipient(stream, "alice@example.com");
+    gpg_stream_add_recipient(stream, "bob@example.com");
+    gpg_stream_add_recipient(stream, "carol@example.com");
+    
+    // Any of the three recipients can decrypt this message
+    gpg_stream_set_mode(stream, GPG_MODE_SIGN_AND_ENCRYPT);
+    bool success = gpg_stream_send_string(stream, "Secret message!");
+
+    gpg_stream_free(stream);
+    return success ? 0 : 1;
+}
+```
+
+### Universal Receiver (Handles All Modes)
+```c
+#include <libgpg-stream.h>
+
+int main() {
+    gpg_stream_t *stream = gpg_stream_new();
+    if (!stream) return 1;
+
+    gpg_stream_auto_keys(stream);
+    if (!gpg_stream_start_receive(stream)) {
         gpg_stream_free(stream);
         return 1;
     }
@@ -163,12 +192,18 @@ int main() {
     char buffer[4096];
     gpg_packet_info_t info = {0};
 
+    // Receive always succeeds - handles all modes automatically  
     ssize_t received = gpg_stream_receive(stream, buffer,
                                           sizeof(buffer)-1, &info, 5000);
 
     if (received > 0) {
         buffer[received] = '\0';
         printf("Received: %s\n", buffer);
+        printf("Encrypted: %s\n", info.was_encrypted ? "Yes" : "No");
+        printf("Signed: %s\n", info.was_signed ? "Yes" : "No");
+        if (info.was_signed) {
+            printf("Signature: %s\n", info.signature_valid ? "Valid" : "Invalid");
+        }
         gpg_packet_info_free(&info);
     }
 
@@ -219,46 +254,61 @@ Sets a specific GPG key for signing outgoing messages.
 Adds a recipient key for encrypting outgoing messages.
 - **Parameters**: `key_id` - Key ID, fingerprint, or email address
 - **Returns**: `true` on success, `false` on failure
-- **Note**: Call multiple times to add multiple recipients
+- **Note**: Call multiple times to add multiple recipients. Any recipient with any of the configured keys can decrypt messages independently.
+
+#### `void gpg_stream_clear_recipients(gpg_stream_t *stream)`
+Removes all recipient keys from the stream context.
+- **Parameters**: `stream` - Stream context
+- **Note**: Useful for changing encryption targets mid-stream
+
+#### `bool gpg_stream_set_mode(gpg_stream_t *stream, gpg_mode_t mode)`
+Sets the GPG operation mode for sending data.
+- **Parameters**: 
+  - `stream` - Stream context
+  - `mode` - GPG mode: `GPG_MODE_PLAIN`, `GPG_MODE_SIGN_ONLY`, `GPG_MODE_ENCRYPT_ONLY`, or `GPG_MODE_SIGN_AND_ENCRYPT` (default)
+- **Returns**: `true` on success, `false` on failure
+- **Note**: Changes apply to all subsequent send operations
 
 ### Sending Data
 
 #### `bool gpg_stream_send(gpg_stream_t *stream, const void *data, size_t size)`
-Sends raw data buffer over the encrypted stream.
+Sends raw data buffer over the stream.
 - **Parameters**:
   - `data` - Data buffer to send
   - `size` - Size of data in bytes
 - **Returns**: `true` on success, `false` on failure
+- **Note**: Data is processed according to the current GPG mode (plain, sign-only, encrypt-only, or sign+encrypt)
 
 #### `bool gpg_stream_send_string(gpg_stream_t *stream, const char *str)`
-Sends a null-terminated string over the encrypted stream.
+Sends a null-terminated string over the stream.
 - **Parameters**: `str` - String to send
 - **Returns**: `true` on success, `false` on failure
 
 #### `bool gpg_stream_send_file(gpg_stream_t *stream, const char *path)`
-Reads and sends the contents of a file over the encrypted stream.
+Reads and sends the contents of a file over the stream.
 - **Parameters**: `path` - Path to file to send
 - **Returns**: `true` on success, `false` on failure
 
 #### `bool gpg_stream_send_stdin(gpg_stream_t *stream)`
-Reads from standard input and sends the data over the encrypted stream.
+Reads from standard input and sends the data over the stream.
 - **Returns**: `true` on success, `false` on failure
 
 ### Receiving Data
 
 #### `bool gpg_stream_start_receive(gpg_stream_t *stream)`
-Begins listening for encrypted messages on the multicast stream.
+Begins listening for messages on the multicast stream.
 - **Returns**: `true` on success, `false` on failure
 - **Note**: Must be called before any receive operations
 
 #### `ssize_t gpg_stream_receive(gpg_stream_t *stream, void *buffer, size_t size, gpg_packet_info_t *info, int timeout_ms)`
-Receives and decrypts a single message from the stream.
+Receives a single message from the stream, automatically handling all GPG modes.
 - **Parameters**:
-  - `buffer` - Buffer to store decrypted data
+  - `buffer` - Buffer to store received data  
   - `size` - Size of buffer
   - `info` - Structure to receive packet metadata
   - `timeout_ms` - Timeout in milliseconds (0 = no timeout)
-- **Returns**: Number of bytes received, 0 on timeout, or -1 on error
+- **Returns**: Number of bytes received, 0 on timeout, or -1 only on network errors
+- **Note**: **Always streams data** - plain text, successfully decrypted data, or raw encrypted data (if decryption fails) is always returned to the caller
 
 #### `void gpg_stream_stop_receive(gpg_stream_t *stream)`
 Stops listening for messages and closes the receive socket.
@@ -290,19 +340,89 @@ Contains metadata about received packets:
 - **`sender_email`** - Email address of sender (must be freed)
 - **`signature_valid`** - `true` if signature is valid
 - **`was_signed`** - `true` if packet was signed
-- **`data_size`** - Size of decrypted data
+- **`was_encrypted`** - `true` if packet was encrypted  
+- **`data_size`** - Size of received data
+
+### GPG Modes (`gpg_mode_t`)
+Available GPG operation modes:
+
+- **`GPG_MODE_PLAIN`** - No encryption or signing (plain text)
+- **`GPG_MODE_SIGN_ONLY`** - Sign but don't encrypt
+- **`GPG_MODE_ENCRYPT_ONLY`** - Encrypt but don't sign
+- **`GPG_MODE_SIGN_AND_ENCRYPT`** - Both sign and encrypt (default)
 
 ## Examples
 
 See the `examples/` directory for complete working examples:
 
-- **`example-sender.c`** - Demonstrates various sending methods
-- **`example-receiver.c`** - Shows how to receive and process messages
+- **`example-sender.c`** - Demonstrates various sending methods with all GPG modes
+- **`example-receiver.c`** - Shows how to receive and process messages with metadata
 
 Build examples:
 ```bash
 ./configure --enable-examples
 make
+```
+
+### Advanced Examples
+
+#### Mid-Stream Key Change
+```c
+gpg_stream_t *stream = gpg_stream_new();
+gpg_stream_auto_keys(stream);
+
+// Send with initial keys
+gpg_stream_send_string(stream, "Message 1");
+
+// Change keys mid-stream - no data loss
+gpg_stream_clear_recipients(stream);
+gpg_stream_add_recipient(stream, "newuser@example.com");
+gpg_stream_set_sender(stream, "newsender@example.com");
+
+// Continue sending with new keys  
+gpg_stream_send_string(stream, "Message 2");
+```
+
+#### Multi-Channel Communication
+```c
+// Create separate channels on different multicast addresses
+gpg_stream_t *channel_a = gpg_stream_new_address("239.0.0.1", 5555);
+gpg_stream_t *channel_b = gpg_stream_new_address("239.0.0.2", 5556);
+
+// Configure different keys/modes per channel
+gpg_stream_set_mode(channel_a, GPG_MODE_PLAIN);
+gpg_stream_set_mode(channel_b, GPG_MODE_SIGN_AND_ENCRYPT);
+
+// Send different data on different channels
+gpg_stream_send_string(channel_a, "Public announcement");  
+gpg_stream_send_string(channel_b, "Encrypted secret");
+```
+
+#### Universal Receiver with Metadata
+```c
+ssize_t received = gpg_stream_receive(stream, buffer, sizeof(buffer)-1, &info, 5000);
+
+if (received > 0) {
+    buffer[received] = '\0';
+    
+    // Stream data regardless of encryption success
+    printf("Data: %s\n", buffer);
+    
+    // Check what security was applied
+    if (info.was_encrypted && info.was_signed) {
+        printf("Security: Encrypted + Signed (%s)\n", 
+               info.signature_valid ? "Valid" : "Invalid");
+    } else if (info.was_encrypted) {
+        printf("Security: Encrypted only\n");
+    } else if (info.was_signed) {
+        printf("Security: Signed only (%s)\n", 
+               info.signature_valid ? "Valid" : "Invalid");
+    } else {
+        printf("Security: Plain text\n");
+    }
+    
+    gpg_packet_info_free(&info);
+}
 ```
 
 ## Thread Safety

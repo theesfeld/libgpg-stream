@@ -54,6 +54,7 @@ show_usage (const char *program)
   printf ("  --port PORT          Multicast port (default: 5555)\n");
   printf ("  --sender KEY         Sender key ID (auto-detected if not specified)\n");
   printf ("  --recipient KEY      Add recipient key (can be used multiple times)\n");
+  printf ("  --mode MODE          GPG mode: plain, sign, encrypt, sign+encrypt (default)\n");
   printf ("  --interval SECS      Streaming interval for continuous sources\n");
   printf ("  --verbose           Enable verbose logging\n");
   printf ("  --debug             Enable debug logging\n");
@@ -76,6 +77,7 @@ main (int argc, char *argv[])
   int recipient_count = 0;
   double interval = 1.0;
   int log_level = GPG_LOG_INFO;
+  gpg_mode_t mode = GPG_MODE_SIGN_AND_ENCRYPT;
   bool use_stdin = false;
   const char *file_path = NULL;
   const char *pipe_path = NULL;
@@ -87,6 +89,7 @@ main (int argc, char *argv[])
     {"port", required_argument, 0, 'p'},
     {"sender", required_argument, 0, 's'},
     {"recipient", required_argument, 0, 'r'},
+    {"mode", required_argument, 0, 'm'},
     {"interval", required_argument, 0, 'i'},
     {"stdin", no_argument, 0, 1001},
     {"file", required_argument, 0, 1002},
@@ -100,7 +103,7 @@ main (int argc, char *argv[])
   };
   
   int opt;
-  while ((opt = getopt_long (argc, argv, "a:p:s:r:i:vdh", long_options, NULL)) != -1)
+  while ((opt = getopt_long (argc, argv, "a:p:s:r:m:i:vdh", long_options, NULL)) != -1)
     {
       switch (opt)
         {
@@ -116,6 +119,21 @@ main (int argc, char *argv[])
         case 'r':
           if (recipient_count < 16)
             strncpy (recipients[recipient_count++], optarg, 255);
+          break;
+        case 'm':
+          if (strcmp (optarg, "plain") == 0)
+            mode = GPG_MODE_PLAIN;
+          else if (strcmp (optarg, "sign") == 0)
+            mode = GPG_MODE_SIGN_ONLY;
+          else if (strcmp (optarg, "encrypt") == 0)
+            mode = GPG_MODE_ENCRYPT_ONLY;
+          else if (strcmp (optarg, "sign+encrypt") == 0)
+            mode = GPG_MODE_SIGN_AND_ENCRYPT;
+          else
+            {
+              fprintf (stderr, "Invalid mode: %s. Use plain, sign, encrypt, or sign+encrypt\n", optarg);
+              return 1;
+            }
           break;
         case 'i':
           interval = atof (optarg);
@@ -165,6 +183,14 @@ main (int argc, char *argv[])
     
   // Set up logging
   gpg_stream_set_logging (stream, log_callback, log_level);
+  
+  // Set GPG mode
+  if (!gpg_stream_set_mode (stream, mode))
+    {
+      fprintf (stderr, "Failed to set GPG mode\n");
+      gpg_stream_free (stream);
+      return 1;
+    }
   
   // Set up keys
   if (sender_key)

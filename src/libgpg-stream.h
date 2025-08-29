@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,14 @@ extern "C" {
 
 typedef struct gpg_stream_t gpg_stream_t;
 
+/* GPG operation modes for sending */
+typedef enum {
+  GPG_MODE_PLAIN,              /* No encryption, no signing */
+  GPG_MODE_SIGN_ONLY,          /* Sign but don't encrypt */
+  GPG_MODE_ENCRYPT_ONLY,       /* Encrypt but don't sign */
+  GPG_MODE_SIGN_AND_ENCRYPT    /* Both sign and encrypt (default) */
+} gpg_mode_t;
+
 /* Packet metadata exposed to user */
 typedef struct {
   uint32_t sequence;           /* Packet sequence number */
@@ -42,6 +51,7 @@ typedef struct {
   char *sender_email;          /* Email address (malloc'd, user must free) */
   bool signature_valid;        /* True if signature is valid */
   bool was_signed;             /* True if packet was signed at all */
+  bool was_encrypted;          /* True if packet was encrypted */
   size_t data_size;           /* Size of decrypted data */
 } gpg_packet_info_t;
 
@@ -83,6 +93,9 @@ void gpg_stream_free (gpg_stream_t *stream);
 /* Set logging callback and level */
 void gpg_stream_set_logging (gpg_stream_t *stream, gpg_log_func_t callback, int level);
 
+/* Set GPG operation mode for sending */
+bool gpg_stream_set_mode (gpg_stream_t *stream, gpg_mode_t mode);
+
 /* ========================================================================
  * KEY MANAGEMENT - Automatic with overrides
  * ======================================================================== */
@@ -95,6 +108,9 @@ bool gpg_stream_set_sender (gpg_stream_t *stream, const char *key_id);
 
 /* Add recipient key (for encryption) */
 bool gpg_stream_add_recipient (gpg_stream_t *stream, const char *key_id);
+
+/* Clear all recipient keys */
+void gpg_stream_clear_recipients (gpg_stream_t *stream);
 
 /* List available keys */
 int gpg_stream_list_keys (gpg_stream_t *stream, char ***key_list);

@@ -16,6 +16,9 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "libgpg-stream.h"
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +34,8 @@
 #include <locale.h>
 #include <time.h>
 #include <stdarg.h>
+#include <sys/select.h>
+#include <sys/time.h>
 
 /* ========================================================================
  * INTERNAL TYPES - Hidden implementation details
@@ -44,9 +49,9 @@
 typedef struct __attribute__((packed)) {
   uint32_t sequence;
   double timestamp;
-  size_t encrypted_size;
+  size_t data_size;
   char sender_keyid[GPG_STREAM_KEYID_SIZE + 1];
-  uint8_t encrypted_data[GPG_STREAM_MAX_PACKET_SIZE];
+  uint8_t data[GPG_STREAM_MAX_PACKET_SIZE]; /* May be plain, signed, encrypted, or signed+encrypted */
 } gpg_wire_packet_t;
 
 /* Stream context - opaque to user */
@@ -63,6 +68,7 @@ struct gpg_stream_t {
   char **recipient_keys;
   int recipient_count;
   int recipient_capacity;
+  gpg_mode_t mode;
   
   /* State */
   uint32_t sequence;
@@ -178,14 +184,28 @@ create_socket (gpg_stream_t *stream)
 }
 
 static ssize_t
-encrypt_and_sign_data (gpg_stream_t *stream, const void *data, size_t size,
-                       void *encrypted_buffer, size_t buffer_size)
+process_data_for_send (gpg_stream_t *stream, const void *data, size_t size,
+                       void *output_buffer, size_t buffer_size)
 {
   gpgme_error_t err;
-  gpgme_data_t plain, cipher;
-  gpgme_key_t *keys;
+  gpgme_data_t plain, output;
+  gpgme_key_t *keys = NULL;
+  size_t output_size;
+  char *output_data;
   
-  /* Create data objects */
+  /* Handle plain mode */
+  if (stream->mode == GPG_MODE_PLAIN)
+    {
+      if (size > buffer_size)
+        {
+          set_error (stream, "Data too large: %zu > %zu", size, buffer_size);
+          return -1;
+        }
+      memcpy (output_buffer, data, size);
+      return size;
+    }
+  
+  /* Create data objects for GPG operations */
   err = gpgme_data_new_from_mem (&plain, data, size, 0);
   if (err)
     {
@@ -193,138 +213,216 @@ encrypt_and_sign_data (gpg_stream_t *stream, const void *data, size_t size,
       return -1;
     }
   
-  err = gpgme_data_new (&cipher);
+  err = gpgme_data_new (&output);
   if (err)
     {
-      set_error (stream, "Failed to create cipher data: %s", gpgme_strerror (err));
+      set_error (stream, "Failed to create output data: %s", gpgme_strerror (err));
       gpgme_data_release (plain);
       return -1;
     }
   
-  /* Set up recipient keys */
-  keys = malloc (sizeof (gpgme_key_t) * (stream->recipient_count + 1));
-  for (int i = 0; i < stream->recipient_count; i++)
+  /* Handle different modes */
+  switch (stream->mode)
     {
-      err = gpgme_get_key (stream->gpgme_ctx, stream->recipient_keys[i], &keys[i], 0);
+    case GPG_MODE_SIGN_ONLY:
+      err = gpgme_op_sign (stream->gpgme_ctx, plain, output, GPGME_SIG_MODE_NORMAL);
       if (err)
+        set_error (stream, "Failed to sign: %s", gpgme_strerror (err));
+      break;
+      
+    case GPG_MODE_ENCRYPT_ONLY:
+      if (stream->recipient_count == 0)
         {
-          set_error (stream, "Failed to get recipient key %s: %s",
-                     stream->recipient_keys[i], gpgme_strerror (err));
-          for (int j = 0; j < i; j++)
-            gpgme_key_unref (keys[j]);
-          free (keys);
-          gpgme_data_release (plain);
-          gpgme_data_release (cipher);
-          return -1;
+          set_error (stream, "No recipients for encryption");
+          err = GPG_ERR_NO_PUBKEY;
+          break;
         }
+      
+      /* Set up recipient keys */
+      keys = malloc (sizeof (gpgme_key_t) * (stream->recipient_count + 1));
+      for (int i = 0; i < stream->recipient_count; i++)
+        {
+          err = gpgme_get_key (stream->gpgme_ctx, stream->recipient_keys[i], &keys[i], 0);
+          if (err)
+            {
+              set_error (stream, "Failed to get recipient key %s: %s",
+                         stream->recipient_keys[i], gpgme_strerror (err));
+              for (int j = 0; j < i; j++)
+                gpgme_key_unref (keys[j]);
+              free (keys);
+              keys = NULL;
+              break;
+            }
+        }
+      
+      if (!err)
+        {
+          keys[stream->recipient_count] = NULL;
+          err = gpgme_op_encrypt (stream->gpgme_ctx, keys, GPGME_ENCRYPT_ALWAYS_TRUST,
+                                  plain, output);
+          if (err)
+            set_error (stream, "Failed to encrypt: %s", gpgme_strerror (err));
+        }
+      break;
+      
+    case GPG_MODE_SIGN_AND_ENCRYPT:
+      if (stream->recipient_count == 0)
+        {
+          set_error (stream, "No recipients for encryption");
+          err = GPG_ERR_NO_PUBKEY;
+          break;
+        }
+      
+      /* Set up recipient keys */
+      keys = malloc (sizeof (gpgme_key_t) * (stream->recipient_count + 1));
+      for (int i = 0; i < stream->recipient_count; i++)
+        {
+          err = gpgme_get_key (stream->gpgme_ctx, stream->recipient_keys[i], &keys[i], 0);
+          if (err)
+            {
+              set_error (stream, "Failed to get recipient key %s: %s",
+                         stream->recipient_keys[i], gpgme_strerror (err));
+              for (int j = 0; j < i; j++)
+                gpgme_key_unref (keys[j]);
+              free (keys);
+              keys = NULL;
+              break;
+            }
+        }
+      
+      if (!err)
+        {
+          keys[stream->recipient_count] = NULL;
+          err = gpgme_op_encrypt_sign (stream->gpgme_ctx, keys, GPGME_ENCRYPT_ALWAYS_TRUST,
+                                       plain, output);
+          if (err)
+            set_error (stream, "Failed to encrypt and sign: %s", gpgme_strerror (err));
+        }
+      break;
+      
+    default:
+      err = GPG_ERR_INV_VALUE;
+      set_error (stream, "Invalid GPG mode: %d", stream->mode);
+      break;
     }
-  keys[stream->recipient_count] = NULL;
-  
-  /* Encrypt and sign */
-  err = gpgme_op_encrypt_sign (stream->gpgme_ctx, keys, GPGME_ENCRYPT_ALWAYS_TRUST,
-                               plain, cipher);
   
   /* Clean up keys */
-  for (int i = 0; i < stream->recipient_count; i++)
-    gpgme_key_unref (keys[i]);
-  free (keys);
+  if (keys)
+    {
+      for (int i = 0; i < stream->recipient_count; i++)
+        gpgme_key_unref (keys[i]);
+      free (keys);
+    }
   
   if (err)
     {
-      set_error (stream, "Failed to encrypt and sign: %s", gpgme_strerror (err));
       gpgme_data_release (plain);
-      gpgme_data_release (cipher);
+      gpgme_data_release (output);
       return -1;
     }
   
-  /* Get encrypted data */
-  size_t encrypted_size;
-  char *encrypted_data = gpgme_data_release_and_get_mem (cipher, &encrypted_size);
+  /* Get processed data */
+  output_data = gpgme_data_release_and_get_mem (output, &output_size);
   
-  if (encrypted_size > buffer_size)
+  if (output_size > buffer_size)
     {
-      set_error (stream, "Encrypted data too large: %zu > %zu", encrypted_size, buffer_size);
-      gpgme_free (encrypted_data);
+      set_error (stream, "Processed data too large: %zu > %zu", output_size, buffer_size);
+      gpgme_free (output_data);
       gpgme_data_release (plain);
       return -1;
     }
   
-  memcpy (encrypted_buffer, encrypted_data, encrypted_size);
-  gpgme_free (encrypted_data);
+  memcpy (output_buffer, output_data, output_size);
+  gpgme_free (output_data);
   gpgme_data_release (plain);
   
-  return encrypted_size;
+  return output_size;
 }
 
 static ssize_t
-decrypt_and_verify_data (gpg_stream_t *stream, const void *encrypted_data, 
-                         size_t encrypted_size, void *plain_buffer, 
-                         size_t buffer_size, gpg_packet_info_t *info)
+process_received_data (gpg_stream_t *stream, const void *received_data, 
+                       size_t received_size, void *plain_buffer, 
+                       size_t buffer_size, gpg_packet_info_t *info)
 {
   gpgme_error_t err;
-  gpgme_data_t cipher, plain;
+  gpgme_data_t input, output;
   gpgme_ctx_t ctx;
+  bool operation_successful = false;
+  ssize_t plain_size = -1;
   
-  /* Create fresh GPGME context for decryption */
+  /* Initialize info structure */
+  if (info)
+    {
+      info->was_signed = false;
+      info->was_encrypted = false;
+      info->signature_valid = false;
+      info->sender_fingerprint = NULL;
+      info->sender_email = NULL;
+    }
+  
+  /* First, try to detect if this is plain data by checking for GPG markers */
+  const char *data_str = (const char*)received_data;
+  const unsigned char *data_bytes = (const unsigned char*)received_data;
+  bool looks_like_gpg = (received_size > 10 && 
+                         (strstr(data_str, "-----BEGIN PGP") ||
+                          (data_bytes[0] & 0x80))); /* Binary GPG starts with high bit set */
+  
+  if (!looks_like_gpg)
+    {
+      /* Treat as plain data */
+      if (received_size > buffer_size)
+        {
+          set_error (stream, "Plain data too large: %zu > %zu", received_size, buffer_size);
+          return -1;
+        }
+      
+      memcpy (plain_buffer, received_data, received_size);
+      
+      if (info)
+        info->data_size = received_size;
+      
+      log_message (stream, GPG_LOG_DEBUG, "Received plain data (%zu bytes)", received_size);
+      return received_size;
+    }
+  
+  /* Create fresh GPGME context for processing */
   err = gpgme_new (&ctx);
   if (err)
     {
-      set_error (stream, "Failed to create decrypt context: %s", gpgme_strerror (err));
+      set_error (stream, "Failed to create GPG context: %s", gpgme_strerror (err));
       return -1;
     }
   
   gpgme_set_armor (ctx, 0);
   
   /* Create data objects */
-  err = gpgme_data_new_from_mem (&cipher, encrypted_data, encrypted_size, 0);
+  err = gpgme_data_new_from_mem (&input, received_data, received_size, 0);
   if (err)
     {
-      set_error (stream, "Failed to create cipher data: %s", gpgme_strerror (err));
+      set_error (stream, "Failed to create input data: %s", gpgme_strerror (err));
       gpgme_release (ctx);
       return -1;
     }
   
-  err = gpgme_data_new (&plain);
+  err = gpgme_data_new (&output);
   if (err)
     {
-      set_error (stream, "Failed to create plain data: %s", gpgme_strerror (err));
-      gpgme_data_release (cipher);
+      set_error (stream, "Failed to create output data: %s", gpgme_strerror (err));
+      gpgme_data_release (input);
       gpgme_release (ctx);
       return -1;
     }
   
-  /* Try decrypt and verify first */
-  err = gpgme_op_decrypt_verify (ctx, cipher, plain);
-  if (err)
+  /* Try operations in order: decrypt+verify, decrypt-only, verify-only */
+  
+  /* 1. Try decrypt and verify (signed+encrypted) */
+  err = gpgme_op_decrypt_verify (ctx, input, output);
+  if (err == GPG_ERR_NO_ERROR)
     {
-      log_message (stream, GPG_LOG_WARN, "Decrypt+verify failed: %s", gpgme_strerror (err));
-      
-      /* Reset data and try decrypt only */
-      gpgme_data_seek (cipher, 0, SEEK_SET);
-      gpgme_data_seek (plain, 0, SEEK_SET);
-      
-      err = gpgme_op_decrypt (ctx, cipher, plain);
-      if (err)
-        {
-          set_error (stream, "Failed to decrypt: %s", gpgme_strerror (err));
-          gpgme_data_release (cipher);
-          gpgme_data_release (plain);
-          gpgme_release (ctx);
-          return -1;
-        }
-      
-      /* Mark as unsigned */
+      operation_successful = true;
       if (info)
         {
-          info->was_signed = false;
-          info->signature_valid = false;
-        }
-    }
-  else
-    {
-      /* Successfully decrypted and verified */
-      if (info)
-        {
+          info->was_encrypted = true;
           info->was_signed = true;
           
           /* Get signature verification result */
@@ -334,11 +432,9 @@ decrypt_and_verify_data (gpg_stream_t *stream, const void *encrypted_data,
               gpgme_signature_t sig = verify_result->signatures;
               info->signature_valid = (sig->status == GPG_ERR_NO_ERROR);
               
-              /* Get signer information */
               if (sig->fpr)
                 info->sender_fingerprint = strdup (sig->fpr);
               
-              /* Try to get email from key */
               gpgme_key_t key;
               if (gpgme_get_key (ctx, sig->fpr, &key, 0) == GPG_ERR_NO_ERROR)
                 {
@@ -347,22 +443,109 @@ decrypt_and_verify_data (gpg_stream_t *stream, const void *encrypted_data,
                   gpgme_key_unref (key);
                 }
             }
-          else
+        }
+      log_message (stream, GPG_LOG_DEBUG, "Processed signed+encrypted data");
+    }
+  else
+    {
+      /* 2. Try decrypt only (encrypted-only) */
+      gpgme_data_seek (input, 0, SEEK_SET);
+      gpgme_data_seek (output, 0, SEEK_SET);
+      
+      err = gpgme_op_decrypt (ctx, input, output);
+      if (err == GPG_ERR_NO_ERROR)
+        {
+          operation_successful = true;
+          if (info)
             {
-              info->signature_valid = false;
+              info->was_encrypted = true;
+              info->was_signed = false;
+            }
+          log_message (stream, GPG_LOG_DEBUG, "Processed encrypted-only data");
+        }
+      else
+        {
+          /* 3. Try verify only (signed-only) */
+          gpgme_data_seek (input, 0, SEEK_SET);
+          gpgme_data_seek (output, 0, SEEK_SET);
+          
+          err = gpgme_op_verify (ctx, input, NULL, output);
+          if (err == GPG_ERR_NO_ERROR)
+            {
+              operation_successful = true;
+              if (info)
+                {
+                  info->was_encrypted = false;
+                  info->was_signed = true;
+                  
+                  gpgme_verify_result_t verify_result = gpgme_op_verify_result (ctx);
+                  if (verify_result && verify_result->signatures)
+                    {
+                      gpgme_signature_t sig = verify_result->signatures;
+                      info->signature_valid = (sig->status == GPG_ERR_NO_ERROR);
+                      
+                      if (sig->fpr)
+                        info->sender_fingerprint = strdup (sig->fpr);
+                      
+                      gpgme_key_t key;
+                      if (gpgme_get_key (ctx, sig->fpr, &key, 0) == GPG_ERR_NO_ERROR)
+                        {
+                          if (key->uids && key->uids->email)
+                            info->sender_email = strdup (key->uids->email);
+                          gpgme_key_unref (key);
+                        }
+                    }
+                }
+              log_message (stream, GPG_LOG_DEBUG, "Processed signed-only data");
             }
         }
     }
   
-  /* Read decrypted data */
-  gpgme_data_seek (plain, 0, SEEK_SET);
-  ssize_t plain_size = gpgme_data_read (plain, plain_buffer, buffer_size);
+  if (!operation_successful)
+    {
+      /* Could not decrypt/verify - treat as raw data and pass it through */
+      log_message (stream, GPG_LOG_WARN, "Failed to process GPG data, streaming raw: %s", gpgme_strerror (err));
+      
+      if (received_size > buffer_size)
+        {
+          set_error (stream, "Raw data too large: %zu > %zu", received_size, buffer_size);
+          gpgme_data_release (input);
+          gpgme_data_release (output);
+          gpgme_release (ctx);
+          return -1;
+        }
+      
+      memcpy (plain_buffer, received_data, received_size);
+      
+      if (info)
+        {
+          info->was_encrypted = true; /* We detected GPG format but couldn't process it */
+          info->was_signed = false;
+          info->signature_valid = false;
+          info->data_size = received_size;
+        }
+      
+      gpgme_data_release (input);
+      gpgme_data_release (output);
+      gpgme_release (ctx);
+      return received_size;
+    }
   
-  if (info)
-    info->data_size = plain_size;
+  /* Read processed data */
+  gpgme_data_seek (output, 0, SEEK_SET);
+  plain_size = gpgme_data_read (output, plain_buffer, buffer_size);
   
-  gpgme_data_release (cipher);
-  gpgme_data_release (plain);
+  if (plain_size < 0)
+    {
+      set_error (stream, "Failed to read processed data");
+    }
+  else if (info)
+    {
+      info->data_size = plain_size;
+    }
+  
+  gpgme_data_release (input);
+  gpgme_data_release (output);
   gpgme_release (ctx);
   
   return plain_size;
@@ -393,6 +576,7 @@ gpg_stream_new_address (const char *address, int port)
   stream->sequence = 1;
   stream->recipient_capacity = 16;
   stream->recipient_keys = malloc (sizeof (char*) * stream->recipient_capacity);
+  stream->mode = GPG_MODE_SIGN_AND_ENCRYPT;
   
   pthread_mutex_init (&stream->mutex, NULL);
   
@@ -440,6 +624,16 @@ gpg_stream_set_logging (gpg_stream_t *stream, gpg_log_func_t callback, int level
     
   stream->log_callback = callback;
   stream->log_level = level;
+}
+
+bool
+gpg_stream_set_mode (gpg_stream_t *stream, gpg_mode_t mode)
+{
+  if (!stream)
+    return false;
+    
+  stream->mode = mode;
+  return true;
 }
 
 /* ========================================================================
@@ -565,6 +759,22 @@ gpg_stream_add_recipient (gpg_stream_t *stream, const char *key_id)
   return true;
 }
 
+void
+gpg_stream_clear_recipients (gpg_stream_t *stream)
+{
+  if (!stream)
+    return;
+    
+  for (int i = 0; i < stream->recipient_count; i++)
+    {
+      free (stream->recipient_keys[i]);
+      stream->recipient_keys[i] = NULL;
+    }
+  
+  stream->recipient_count = 0;
+  log_message (stream, GPG_LOG_INFO, "All recipients cleared");
+}
+
 /* ========================================================================
  * SENDING - Universal input, automatic formatting
  * ======================================================================== */
@@ -591,21 +801,21 @@ gpg_stream_send (gpg_stream_t *stream, const void *data, size_t size)
   strncpy (packet.sender_keyid, stream->sender_keyid, GPG_STREAM_KEYID_SIZE);
   packet.sender_keyid[GPG_STREAM_KEYID_SIZE] = '\0';
   
-  /* Encrypt and sign data */
-  ssize_t encrypted_size = encrypt_and_sign_data (stream, data, size,
-                                                  packet.encrypted_data,
+  /* Process data according to mode */
+  ssize_t processed_size = process_data_for_send (stream, data, size,
+                                                  packet.data,
                                                   GPG_STREAM_MAX_PACKET_SIZE);
-  if (encrypted_size < 0)
+  if (processed_size < 0)
     {
       pthread_mutex_unlock (&stream->mutex);
       return false;
     }
   
-  packet.encrypted_size = encrypted_size;
+  packet.data_size = processed_size;
   
   /* Send packet */
   ssize_t sent = sendto (stream->sockfd, &packet, 
-                         sizeof (packet) - GPG_STREAM_MAX_PACKET_SIZE + encrypted_size,
+                         sizeof (packet) - GPG_STREAM_MAX_PACKET_SIZE + processed_size,
                          0, (struct sockaddr*)&stream->addr, sizeof (stream->addr));
   
   if (sent < 0)
@@ -618,8 +828,8 @@ gpg_stream_send (gpg_stream_t *stream, const void *data, size_t size)
   stream->stats.packets_sent++;
   stream->stats.bytes_sent += size;
   
-  log_message (stream, GPG_LOG_DEBUG, "Sent packet %u (%zu bytes encrypted to %zd)",
-               ntohl (packet.sequence), size, encrypted_size);
+  log_message (stream, GPG_LOG_DEBUG, "Sent packet %u (%zu bytes processed to %zd)",
+               ntohl (packet.sequence), size, processed_size);
   
   pthread_mutex_unlock (&stream->mutex);
   return true;
@@ -940,8 +1150,8 @@ gpg_stream_receive (gpg_stream_t *stream, void *buffer, size_t size,
       info->timestamp = packet.timestamp;
     }
   
-  ssize_t plain_size = decrypt_and_verify_data (stream, packet.encrypted_data,
-                                                packet.encrypted_size, buffer, size, info);
+  ssize_t plain_size = process_received_data (stream, packet.data,
+                                            packet.data_size, buffer, size, info);
   
   if (plain_size < 0)
     {

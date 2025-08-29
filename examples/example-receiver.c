@@ -80,6 +80,7 @@ print_packet_info (const gpg_packet_info_t *info)
   printf ("--- Packet #%u ---\n", info->sequence);
   printf ("Timestamp: %.0f\n", info->timestamp);
   printf ("Data size: %zu bytes\n", info->data_size);
+  printf ("Encryption: %s\n", info->was_encrypted ? "YES" : "NO");
   
   if (info->was_signed)
     {
@@ -91,7 +92,7 @@ print_packet_info (const gpg_packet_info_t *info)
     }
   else
     {
-      printf ("Signature: NONE (unsigned packet)\n");
+      printf ("Signature: NONE\n");
     }
   
   printf ("--- Content ---\n");
