@@ -1,4 +1,4 @@
-/* example-sender.c - GNU-standard simple sender example
+/* example-sender.c - GNU-standard simple sender example 
  *
  * Copyright (C) 2025 William Theesfeld <william@theesfeld.net>
  *
